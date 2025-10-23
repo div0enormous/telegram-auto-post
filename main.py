@@ -57,7 +57,7 @@ async def send_post_to_user(client, user_id, post_id):
 
     content, media_type, media_file_id, buttons_json = post
     buttons = json.loads(buttons_json) if buttons_json else []
-    
+
     keyboard = []
     for btn in buttons:
         keyboard.append([InlineKeyboardButton(btn['text'], url=btn['url'])])
@@ -98,7 +98,7 @@ async def send_post_to_user(client, user_id, post_id):
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message: Message):
     user_id = message.from_user.id
-    
+
     # Deep linking for posts
     if len(message.command) > 1:
         post_id = message.command[1].replace('post_', '')
@@ -148,7 +148,8 @@ async def help_command(client, message: Message):
 async def search_command(client, message: Message):
     user_id = message.from_user.id
     user_data[user_id] = {'awaiting': 'search_query'}
-    await message.reply_text("🔎 **What are you looking for?**\n\Send me the name to search for.")
+    # FIX 1: Corrected the invalid escape sequence '\S' to '\nS'.
+    await message.reply_text("🔎 **What are you looking for?**\nSend me the name to search for.")
 
 
 # ============== ADMIN: CHANNEL MANAGEMENT ==============
@@ -158,7 +159,7 @@ async def add_channel_command(client, message: Message):
     if not is_admin(message.from_user.id):
         await message.reply_text("⛔ You are not authorized for this command.")
         return
-    
+
     await message.reply_text(
         "📢 **Forward a message from the channel/group** or send the channel ID (e.g., -1001234567890)"
     )
@@ -258,7 +259,7 @@ async def edit_post_command(client, message: Message):
 async def done_command(client, message: Message):
     user_id = message.from_user.id
     if not is_admin(user_id): return
-    
+
     if user_id not in user_data or user_data[user_id].get('state') not in ['creating_post', 'editing_post']:
         await message.reply_text("❌ No post creation or editing in progress.")
         return
@@ -267,7 +268,7 @@ async def done_command(client, message: Message):
     state = user_data[user_id]['state']
 
     title = (post_data.get('content') or "Untitled Post")[:50]
-    
+
     if state == 'creating_post':
         post_id = db.add_post(
             title,
@@ -278,7 +279,7 @@ async def done_command(client, message: Message):
         )
         bot_username = (await client.get_me()).username
         share_link = f"https://t.me/{bot_username}?start=post_{post_id}"
-        
+
         await message.reply_text(
             f"✅ Post saved as **Post #{post_id}**!\n\n"
             f"🔗 **Shareable Link:**\n`{share_link}`\n\n"
@@ -304,16 +305,25 @@ async def done_command(client, message: Message):
                 [InlineKeyboardButton("📤 Repost Now", callback_data=f"repost_{post_id}")]
             ])
         )
-    
+
     user_data.pop(user_id, None)
 
 
 # ============== MESSAGE HANDLER ==============
 
-@app.on_message(filters.private & ~filters.command())
+# FIX 2: Added a list of commands to exclude from this handler.
+@app.on_message(filters.private & ~filters.command([
+    "start", "help", "search", "addchannel", "listchannels", "removechannel",
+    "newpost", "listposts", "deletepost", "repost", "editpost", "done"
+]))
 async def handle_messages(client, message: Message):
     user_id = message.from_user.id
-    if user_id not in user_data: return
+    # Check if user has an active state in user_data
+    if user_id not in user_data:
+        # Politely inform non-admin users if they send random messages
+        if not is_admin(user_id):
+            await message.reply_text("Please use /search to find posts, or /help for more commands.")
+        return
 
     # User searching for a post
     if user_data[user_id].get('awaiting') == 'search_query':
@@ -327,8 +337,9 @@ async def handle_messages(client, message: Message):
         user_data.pop(user_id, None)
         return
 
+    # From here on, only admins should be processed
     if not is_admin(user_id): return
-    
+
     # Admin adding a channel
     if user_data[user_id].get('awaiting') == 'channel_id':
         if message.forward_from_chat:
@@ -342,7 +353,7 @@ async def handle_messages(client, message: Message):
             except Exception as e:
                 await message.reply_text(f"❌ Invalid channel ID or I don't have access. Error: {e}")
                 return
-        
+
         db.add_channel(channel_id, channel_name)
         await message.reply_text(f"✅ Channel **{channel_name}** (`{channel_id}`) added successfully!")
         user_data.pop(user_id, None)
@@ -352,7 +363,7 @@ async def handle_messages(client, message: Message):
     state = user_data[user_id].get('state')
     if state in ['creating_post', 'editing_post']:
         post_data = user_data[user_id]['post_data']
-        
+
         # Capture content and media
         if not post_data.get('content_set'):
             post_data['content'] = message.text or message.caption or ""
@@ -362,27 +373,28 @@ async def handle_messages(client, message: Message):
             elif message.video:
                 post_data['media_type'] = 'video'
                 post_data['media_file_id'] = message.video.file_id
-            
+
             post_data['content_set'] = True
             await message.reply_text(
                 "✅ Content saved! Now send buttons (one per line) in `Text | URL` format, or /done to finish."
             )
         # Capture buttons
         else:
-            lines = message.text.strip().split('\n')
-            buttons = post_data.get('buttons', [])
-            new_buttons = 0
-            for line in lines:
-                if '|' in line:
-                    parts = line.split('|', 1)
-                    btn_text = parts[0].strip()
-                    btn_url = parts[1].strip()
-                    short_url = shorten_url(btn_url)
-                    buttons.append({'text': btn_text, 'url': short_url})
-                    new_buttons += 1
-            
-            post_data['buttons'] = buttons
-            await message.reply_text(f"✅ Added {new_buttons} button(s)! Send more or use /done.")
+            if message.text: # Ensure there is text to process
+                lines = message.text.strip().split('\n')
+                buttons = post_data.get('buttons', [])
+                new_buttons = 0
+                for line in lines:
+                    if '|' in line:
+                        parts = line.split('|', 1)
+                        btn_text = parts[0].strip()
+                        btn_url = parts[1].strip()
+                        short_url = shorten_url(btn_url)
+                        buttons.append({'text': btn_text, 'url': short_url})
+                        new_buttons += 1
+
+                post_data['buttons'] = buttons
+                await message.reply_text(f"✅ Added {new_buttons} button(s)! Send more or use /done.")
 
 
 # ============== CALLBACK HANDLERS ==============
@@ -391,7 +403,7 @@ async def handle_messages(client, message: Message):
 async def handle_callback_queries(client, callback_query: CallbackQuery):
     data = callback_query.data
     user_id = callback_query.from_user.id
-    
+
     # User viewing a search result
     if data.startswith("view_post_"):
         post_id = data.split('_')[2]
@@ -403,7 +415,7 @@ async def handle_callback_queries(client, callback_query: CallbackQuery):
     if not is_admin(user_id):
         await callback_query.answer("⛔ You are not authorized.", show_alert=True)
         return
-    
+
     # Channel Removal
     if data.startswith("remove_ch_"):
         channel_id = data.replace('remove_ch_', '')
@@ -417,7 +429,7 @@ async def handle_callback_queries(client, callback_query: CallbackQuery):
         db.delete_post(post_id)
         await callback_query.answer("✅ Post deleted!", show_alert=True)
         await callback_query.message.edit_text("✅ Post deleted successfully!")
-    
+
     # Edit Post Selection
     elif data.startswith("edit_post_"):
         post_id = data.replace('edit_post_', '')
@@ -428,7 +440,7 @@ async def handle_callback_queries(client, callback_query: CallbackQuery):
 
         content, media_type, media_file_id, buttons_json = post
         buttons = json.loads(buttons_json) if buttons_json else []
-        
+
         user_data[user_id] = {
             'state': 'editing_post',
             'post_id': post_id,
@@ -455,12 +467,12 @@ async def handle_callback_queries(client, callback_query: CallbackQuery):
             return
 
         user_data[user_id] = {'selecting_channels': {'post_id': post_id, 'selected': []}}
-        
+
         buttons = []
         for channel_id, channel_name in channels:
             buttons.append([InlineKeyboardButton(f"🔲 {channel_name}", callback_data=f"toggle_ch_{channel_id}")])
         buttons.append([InlineKeyboardButton("✅ Publish to Selected", callback_data="confirm_publish")])
-        
+
         await callback_query.message.edit_text(
             f"**Select channels to publish Post #{post_id} to:**",
             reply_markup=InlineKeyboardMarkup(buttons)
@@ -469,61 +481,69 @@ async def handle_callback_queries(client, callback_query: CallbackQuery):
     # Publish/Repost - Step 2: Toggle channel selection
     elif data.startswith("toggle_ch_"):
         channel_id = data.replace('toggle_ch_', '')
-        selection_data = user_data[user_id]['selecting_channels']
-        selected_channels = selection_data['selected']
-        
-        if channel_id in selected_channels:
-            selected_channels.remove(channel_id)
+        if user_id in user_data and 'selecting_channels' in user_data[user_id]:
+            selection_data = user_data[user_id]['selecting_channels']
+            selected_channels = selection_data['selected']
+
+            if channel_id in selected_channels:
+                selected_channels.remove(channel_id)
+            else:
+                selected_channels.append(channel_id)
+
+            buttons = []
+            for cid, cname in db.get_all_channels():
+                status = "✅" if str(cid) in selected_channels else "🔲"
+                buttons.append([InlineKeyboardButton(f"{status} {cname}", callback_data=f"toggle_ch_{cid}")])
+            buttons.append([InlineKeyboardButton("✅ Publish to Selected", callback_data="confirm_publish")])
+
+            await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(buttons))
         else:
-            selected_channels.append(channel_id)
-        
-        buttons = []
-        for cid, cname in db.get_all_channels():
-            status = "✅" if str(cid) in selected_channels else "🔲"
-            buttons.append([InlineKeyboardButton(f"{status} {cname}", callback_data=f"toggle_ch_{cid}")])
-        buttons.append([InlineKeyboardButton("✅ Publish to Selected", callback_data="confirm_publish")])
-        
-        await callback_query.message.edit_reply_markup(InlineKeyboardMarkup(buttons))
+            await callback_query.answer("Session expired. Please start over.", show_alert=True)
+
 
     # Publish/Repost - Step 3: Confirm and post
     elif data == "confirm_publish":
-        selection_data = user_data[user_id]['selecting_channels']
-        post_id = selection_data['post_id']
-        selected_channels = selection_data['selected']
+        if user_id in user_data and 'selecting_channels' in user_data[user_id]:
+            selection_data = user_data[user_id]['selecting_channels']
+            post_id = selection_data['post_id']
+            selected_channels = selection_data['selected']
 
-        if not selected_channels:
-            await callback_query.answer("⚠️ Please select at least one channel!", show_alert=True)
-            return
+            if not selected_channels:
+                await callback_query.answer("⚠️ Please select at least one channel!", show_alert=True)
+                return
 
-        post = db.get_post(post_id)
-        if not post:
-            await callback_query.answer("❌ Post not found!", show_alert=True)
-            return
+            post = db.get_post(post_id)
+            if not post:
+                await callback_query.answer("❌ Post not found!", show_alert=True)
+                return
 
-        content, media_type, media_file_id, buttons_json = post
-        buttons = json.loads(buttons_json) if buttons_json else []
-        keyboard = [[InlineKeyboardButton(b['text'], url=b['url'])] for b in buttons]
-        reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-        
-        success_count = 0
-        await callback_query.message.edit_text("🚀 **Publishing...**")
+            content, media_type, media_file_id, buttons_json = post
+            buttons = json.loads(buttons_json) if buttons_json else []
+            keyboard = [[InlineKeyboardButton(b['text'], url=b['url'])] for b in buttons]
+            reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
 
-        for channel_id in selected_channels:
-            try:
-                if media_type == 'photo':
-                    await client.send_photo(int(channel_id), media_file_id, caption=content, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-                elif media_type == 'video':
-                    await client.send_video(int(channel_id), media_file_id, caption=content, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
-                else:
-                    await client.send_message(int(channel_id), content, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
-                success_count += 1
-            except Exception as e:
-                logger.error(f"Failed to post to {channel_id}: {e}")
+            success_count = 0
+            await callback_query.message.edit_text("🚀 **Publishing...**")
 
-        await callback_query.message.edit_text(
-            f"✅ **Published!**\n\nPosted to {success_count}/{len(selected_channels)} selected channels."
-        )
-        user_data.pop(user_id, None)
+            for channel_id in selected_channels:
+                try:
+                    if media_type == 'photo':
+                        await client.send_photo(int(channel_id), media_file_id, caption=content, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+                    elif media_type == 'video':
+                        await client.send_video(int(channel_id), media_file_id, caption=content, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+                    else:
+                        await client.send_message(int(channel_id), content, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to post to {channel_id}: {e}")
+
+            await callback_query.message.edit_text(
+                f"✅ **Published!**\n\nPosted to {success_count}/{len(selected_channels)} selected channels."
+            )
+            user_data.pop(user_id, None)
+        else:
+            await callback_query.answer("Session expired. Please start over.", show_alert=True)
+
 
     # Save Only
     elif data == "save_only":
@@ -539,4 +559,3 @@ async def handle_callback_queries(client, callback_query: CallbackQuery):
 if __name__ == "__main__":
     print("🤖 Bot started successfully!")
     app.run()
-
