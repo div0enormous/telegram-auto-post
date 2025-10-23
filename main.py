@@ -538,4 +538,5 @@ async def handle_callback_queries(client, callback_query: CallbackQuery):
 
 if __name__ == "__main__":
     print("🤖 Bot started successfully!")
-    app.run()```
+    app.run()
+
