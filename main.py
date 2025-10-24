@@ -128,10 +128,9 @@ This is your control panel for the Multi-Channel Post Bot.
         welcome_text = """
 👋 **Welcome to the Bot!**
 
-You can use me to search for posts.
+You can search for posts by typing its name directly.
 
 **Available Commands:**
-/search - Search for a post by name
 /help - Show this message
         """
     await message.reply_text(welcome_text)
@@ -140,16 +139,6 @@ You can use me to search for posts.
 async def help_command(client, message: Message):
     # This is an alias for the start command without arguments
     await start_command(client, message)
-
-
-# ============== USER COMMANDS ==============
-
-@app.on_message(filters.command("search") & filters.private)
-async def search_command(client, message: Message):
-    user_id = message.from_user.id
-    user_data[user_id] = {'awaiting': 'search_query'}
-    # FIX 1: Corrected the invalid escape sequence '\S' to '\nS'.
-    await message.reply_text("🔎 **What are you looking for?**\nSend me the name to search for.")
 
 
 # ============== ADMIN: CHANNEL MANAGEMENT ==============
@@ -200,10 +189,11 @@ async def new_post_command(client, message: Message):
     await message.reply_text(
         "📝 **Creating New Post**\n\n"
         "Send me your post content with optional media (photo/video). "
-        "You can use **Markdown** for formatting.\n\n"
+        "You can use Telegram's built-in tools for **formatting**.\n\n"
         "After that, send buttons in this format:\n"
-        "`Button Text | URL`\n"
-        "One button per line.\n\n"
+        "`Button Text | URL`\n\n"
+        "To shorten a link, add `{url}` at the end:\n"
+        "`Button Text | http://mylink.com{url}`\n\n"
         "Send /done when finished."
     )
     user_data[message.from_user.id] = {'state': 'creating_post', 'post_data': {}}
@@ -311,90 +301,101 @@ async def done_command(client, message: Message):
 
 # ============== MESSAGE HANDLER ==============
 
-# FIX 2: Added a list of commands to exclude from this handler.
 @app.on_message(filters.private & ~filters.command([
-    "start", "help", "search", "addchannel", "listchannels", "removechannel",
+    "start", "help", "addchannel", "listchannels", "removechannel",
     "newpost", "listposts", "deletepost", "repost", "editpost", "done"
 ]))
 async def handle_messages(client, message: Message):
     user_id = message.from_user.id
-    # Check if user has an active state in user_data
-    if user_id not in user_data:
-        # Politely inform non-admin users if they send random messages
-        if not is_admin(user_id):
-            await message.reply_text("Please use /search to find posts, or /help for more commands.")
+
+    # First, handle users who are in the middle of a process (admins)
+    if user_id in user_data:
+        # From here on, only admins should be processed
+        if not is_admin(user_id): return
+
+        # Admin adding a channel
+        if user_data[user_id].get('awaiting') == 'channel_id':
+            if message.forward_from_chat:
+                channel_id = str(message.forward_from_chat.id)
+                channel_name = message.forward_from_chat.title
+            else:
+                try:
+                    channel_id = int(message.text.strip())
+                    chat = await client.get_chat(channel_id)
+                    channel_name = chat.title
+                except Exception as e:
+                    await message.reply_text(f"❌ Invalid channel ID or I don't have access. Error: {e}")
+                    return
+
+            db.add_channel(channel_id, channel_name)
+            await message.reply_text(f"✅ Channel **{channel_name}** (`{channel_id}`) added successfully!")
+            user_data.pop(user_id, None)
+            return
+
+        # Admin creating/editing a post
+        state = user_data[user_id].get('state')
+        if state in ['creating_post', 'editing_post']:
+            post_data = user_data[user_id]['post_data']
+
+            # Capture content and media
+            if not post_data.get('content_set'):
+                # MODIFICATION: Use message.text.markdown to preserve formatting
+                if message.text:
+                    post_data['content'] = message.text.markdown
+                elif message.caption:
+                    post_data['content'] = message.caption.markdown
+                else:
+                    post_data['content'] = ""
+
+                if message.photo:
+                    post_data['media_type'] = 'photo'
+                    post_data['media_file_id'] = message.photo.file_id
+                elif message.video:
+                    post_data['media_type'] = 'video'
+                    post_data['media_file_id'] = message.video.file_id
+
+                post_data['content_set'] = True
+                await message.reply_text(
+                    "✅ Content saved! Now send buttons (one per line) in `Text | URL` format, or /done to finish."
+                )
+            # Capture buttons
+            else:
+                if message.text: # Ensure there is text to process
+                    lines = message.text.strip().split('\n')
+                    buttons = post_data.get('buttons', [])
+                    new_buttons = 0
+                    for line in lines:
+                        if '|' in line:
+                            parts = line.split('|', 1)
+                            btn_text = parts[0].strip()
+                            btn_url = parts[1].strip()
+                            
+                            # MODIFICATION: Conditional URL Shortening
+                            if btn_url.endswith('{url}'):
+                                url_to_shorten = btn_url[:-5] # Remove {url}
+                                final_url = shorten_url(url_to_shorten)
+                            else:
+                                final_url = btn_url
+
+                            buttons.append({'text': btn_text, 'url': final_url})
+                            new_buttons += 1
+
+                    post_data['buttons'] = buttons
+                    await message.reply_text(f"✅ Added {new_buttons} button(s)! Send more or use /done.")
         return
 
-    # User searching for a post
-    if user_data[user_id].get('awaiting') == 'search_query':
-        query = message.text
-        results = db.search_posts(query)
-        if not results:
-            await message.reply_text("😕 No results found for your query.")
+    # If user is not in a specific state, treat as a search query for non-admins
+    if not is_admin(user_id):
+        if message.text:
+            query = message.text
+            results = db.search_posts(query)
+            if not results:
+                await message.reply_text("😕 No results found for your query.")
+            else:
+                buttons = [[InlineKeyboardButton(title, callback_data=f"view_post_{post_id}")] for post_id, title in results]
+                await message.reply_text("🔎 **Here are the search results:**", reply_markup=InlineKeyboardMarkup(buttons))
         else:
-            buttons = [[InlineKeyboardButton(title, callback_data=f"view_post_{post_id}")] for post_id, title in results]
-            await message.reply_text("🔎 **Here are the search results:**", reply_markup=InlineKeyboardMarkup(buttons))
-        user_data.pop(user_id, None)
-        return
-
-    # From here on, only admins should be processed
-    if not is_admin(user_id): return
-
-    # Admin adding a channel
-    if user_data[user_id].get('awaiting') == 'channel_id':
-        if message.forward_from_chat:
-            channel_id = str(message.forward_from_chat.id)
-            channel_name = message.forward_from_chat.title
-        else:
-            try:
-                channel_id = int(message.text.strip())
-                chat = await client.get_chat(channel_id)
-                channel_name = chat.title
-            except Exception as e:
-                await message.reply_text(f"❌ Invalid channel ID or I don't have access. Error: {e}")
-                return
-
-        db.add_channel(channel_id, channel_name)
-        await message.reply_text(f"✅ Channel **{channel_name}** (`{channel_id}`) added successfully!")
-        user_data.pop(user_id, None)
-        return
-
-    # Admin creating/editing a post
-    state = user_data[user_id].get('state')
-    if state in ['creating_post', 'editing_post']:
-        post_data = user_data[user_id]['post_data']
-
-        # Capture content and media
-        if not post_data.get('content_set'):
-            post_data['content'] = message.text or message.caption or ""
-            if message.photo:
-                post_data['media_type'] = 'photo'
-                post_data['media_file_id'] = message.photo.file_id
-            elif message.video:
-                post_data['media_type'] = 'video'
-                post_data['media_file_id'] = message.video.file_id
-
-            post_data['content_set'] = True
-            await message.reply_text(
-                "✅ Content saved! Now send buttons (one per line) in `Text | URL` format, or /done to finish."
-            )
-        # Capture buttons
-        else:
-            if message.text: # Ensure there is text to process
-                lines = message.text.strip().split('\n')
-                buttons = post_data.get('buttons', [])
-                new_buttons = 0
-                for line in lines:
-                    if '|' in line:
-                        parts = line.split('|', 1)
-                        btn_text = parts[0].strip()
-                        btn_url = parts[1].strip()
-                        short_url = shorten_url(btn_url)
-                        buttons.append({'text': btn_text, 'url': short_url})
-                        new_buttons += 1
-
-                post_data['buttons'] = buttons
-                await message.reply_text(f"✅ Added {new_buttons} button(s)! Send more or use /done.")
+            await message.reply_text("Please use text to search for posts, or /help for more information.")
 
 
 # ============== CALLBACK HANDLERS ==============
