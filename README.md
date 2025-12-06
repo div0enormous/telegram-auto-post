@@ -77,8 +77,8 @@ Before setting up the bot, ensure you have:
 ### Step 1: Clone or Download the Project
 
 ```bash
-git clone <your-repository-url>
-cd telegram-multi-channel-bot
+git clone https://github.com/div0enormous/telegram-auto-post.git
+cd telegram-auto-post
 ```
 
 ### Step 2: Install Dependencies
