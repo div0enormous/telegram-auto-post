@@ -1,0 +1,9 @@
+API_ID = YOUR_API_ID
+API_HASH = "YOUR_API_HASH"
+BOT_TOKEN = "YOUR_BOT_TOKEN"
+
+# ShrinkEarn API key
+SHORTENER_API = "YOUR_SHRINKEARN_API_KEY"
+
+# Admins (can manage posts, edit, etc.)
+ADMINS = [YOUR_TELEGRAM_ID]
